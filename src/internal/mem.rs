@@ -7,6 +7,11 @@ use internal::js::error::{JsError, Kind};
 use internal::vm::{JsResult, Lock, LockState};
 use internal::scope::Scope;
 
+pub unsafe trait Rooted<'a>: Copy {
+    fn to_raw(self) -> raw::Local;
+    fn from_raw(h: raw::Local) -> Self;
+}
+
 pub trait Managed: Copy {
     fn to_raw(self) -> raw::Local;
 

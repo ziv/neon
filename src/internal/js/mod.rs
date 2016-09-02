@@ -8,10 +8,30 @@ use std::marker::PhantomData;
 use neon_sys;
 use neon_sys::raw;
 use neon_sys::tag::Tag;
-use internal::mem::{Handle, HandleInternal, Managed};
+use internal::mem::{Handle, HandleInternal, Managed, Rooted};
 use internal::scope::Scope;
 use internal::vm::{VmResult, Throw, JsResult, Isolate, IsolateInternal, CallbackInfo, Call, This, Kernel, exec_function_kernel};
 use internal::js::error::{JsError, Kind};
+
+pub unsafe trait Value2<'a>: Rooted<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool;
+
+    fn downcast<Other: Value2<'a> + 'a>(other: Other) -> Option<Self> {
+        if Self::is_typeof(other) {
+            Some(Self::from_raw(other.to_raw()))
+        } else {
+            None
+        }
+    }
+
+    fn to_string<'b, T: Scope<'b>>(self, _: &mut T) -> VmResult<JsString2<'b>> {
+        build2(|out| { unsafe { neon_sys::convert::to_string(out, self.to_raw()) } })
+    }
+
+    fn as_value<'b, T: Scope<'b>>(self, _: &mut T) -> JsValue2<'b> {
+        JsValue2::from_raw(self.to_raw())
+    }
+}
 
 pub trait ValueInternal: Managed {
     fn is_typeof<Other: Value>(other: Other) -> bool;
@@ -26,6 +46,16 @@ pub trait ValueInternal: Managed {
 
     fn cast<'a, T: Value, F: FnOnce(raw::Local) -> T>(self, f: F) -> Handle<'a, T> {
         Handle::new(f(self.to_raw()))
+    }
+}
+pub fn build2<'a, T: Value2<'a>, F: FnOnce(&mut raw::Local) -> bool>(init: F) -> VmResult<T> {
+    unsafe {
+        let mut local: raw::Local = mem::zeroed();
+        if init(&mut local) {
+            Ok(T::from_raw(local))
+        } else {
+            Err(Throw)
+        }
     }
 }
 
@@ -86,6 +116,23 @@ pub enum Variant<'a> {
 /// A JavaScript value of any type.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsValue2<'a>(raw::Local, PhantomData<&'a ()>);
+
+unsafe impl<'a> Rooted<'a> for JsValue2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsValue2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsValue2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool { true }
+}
+
+
+
+/// A JavaScript value of any type.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsValue(raw::Local);
 
 impl Value for JsValue { }
@@ -134,6 +181,36 @@ impl JsValueInternal for JsValue {
         Handle::new(JsValue(value))
     }
 }
+
+/// The JavaScript `undefined` value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JsUndefined2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsUndefined2<'a> {
+    pub fn new() -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::primitive::undefined(&mut local);
+            JsUndefined2::from_raw(local)
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsUndefined2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsUndefined2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsUndefined2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_undefined(other.to_raw()) }
+    }
+}
+
+// FIXME(commit): unsafe impl This for JsUndefined2
+
 
 /// The JavaScript `undefined` value.
 #[repr(C)]
@@ -187,6 +264,33 @@ impl JsUndefinedInternal for JsUndefined {
 /// The JavaScript `null` value.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsNull2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsNull2<'a> {
+    pub fn new() -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::primitive::null(&mut local);
+            JsNull2::from_raw(local)
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsNull2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsNull2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsNull2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_null(other.to_raw()) }
+    }
+}
+
+/// The JavaScript `null` value.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsNull(raw::Local);
 
 impl JsNull {
@@ -220,6 +324,39 @@ impl JsNullInternal for JsNull {
             neon_sys::primitive::null(&mut local);
             Handle::new(JsNull(local))
         }
+    }
+}
+
+/// A JavaScript boolean primitive value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JsBoolean2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsBoolean2<'a> {
+    pub fn new<T: Scope<'a>>(_: &mut T, b: bool) -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::primitive::boolean(&mut local, b);
+            JsBoolean2::from_raw(local)
+        }
+    }
+
+    pub fn value(self) -> bool {
+        unsafe {
+            neon_sys::primitive::boolean_value(self.to_raw())
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsBoolean2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsBoolean2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsBoolean2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_boolean(other.to_raw()) }
     }
 }
 
@@ -267,6 +404,58 @@ impl JsBoolean {
         unsafe {
             neon_sys::primitive::boolean_value(self.to_raw())
         }
+    }
+}
+
+
+/// A JavaScript string primitive value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JsString2<'a>(raw::Local, PhantomData<&'a ()>);
+
+// FIXME(commit): impl<'a> JsString<'a>:
+
+/*
+impl JsString {
+    pub fn size(self) -> isize {
+        unsafe {
+            neon_sys::string::utf8_len(self.to_raw())
+        }
+    }
+
+    pub fn value(self) -> String {
+        unsafe {
+            let capacity = neon_sys::string::utf8_len(self.to_raw());
+            let mut buffer: Vec<u8> = Vec::with_capacity(capacity as usize);
+            let p = buffer.as_mut_ptr();
+            mem::forget(buffer);
+            let len = neon_sys::string::data(p, capacity, self.to_raw());
+            String::from_raw_parts(p, len as usize, capacity as usize)
+        }
+    }
+
+    pub fn new<'a, T: Scope<'a>>(scope: &mut T, val: &str) -> Option<Handle<'a, JsString>> {
+        JsString::new_internal(scope.isolate(), val)
+    }
+
+    pub fn new_or_throw<'a, T: Scope<'a>>(scope: &mut T, val: &str) -> VmResult<Handle<'a, JsString>> {
+        match JsString::new(scope, val) {
+            Some(v) => Ok(v),
+            None => JsError::throw(Kind::TypeError, "invalid string contents")
+        }
+    }
+}
+*/
+
+unsafe impl<'a> Rooted<'a> for JsString2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsString2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsString2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_string(other.to_raw()) }
     }
 }
 
@@ -383,6 +572,52 @@ impl JsStringInternal for JsString {
 /// 32-bit integer.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsInteger2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsInteger2<'a> {
+    pub fn new<T: Scope<'a>>(scope: &mut T, i: i32) -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::primitive::integer(&mut local, scope.isolate().to_raw(), i);
+            JsInteger2::from_raw(local)
+        }
+    }
+
+    pub fn is_u32(self) -> bool {
+        unsafe {
+            neon_sys::primitive::is_u32(self.to_raw())
+        }
+    }
+
+    pub fn is_i32(self) -> bool {
+        unsafe {
+            neon_sys::primitive::is_i32(self.to_raw())
+        }
+    }
+
+    pub fn value(self) -> i64 {
+        unsafe {
+            neon_sys::primitive::integer_value(self.to_raw())
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsInteger2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsInteger2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsInteger2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_integer(other.to_raw()) }
+    }
+}
+
+/// A JavaScript number value whose value is known statically to be a
+/// 32-bit integer.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsInteger(raw::Local);
 
 impl JsInteger {
@@ -442,6 +677,39 @@ impl JsInteger {
 /// A JavaScript number value.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsNumber2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsNumber2<'a> {
+    pub fn new<T: Scope<'a>>(scope: &mut T, v: f64) -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::primitive::number(&mut local, scope.isolate().to_raw(), v);
+            JsNumber2::from_raw(local)
+        }
+    }
+
+    pub fn value(self) -> f64 {
+        unsafe {
+            neon_sys::primitive::number_value(self.to_raw())
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsNumber2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsNumber2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsNumber2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_number(other.to_raw()) }
+    }
+}
+
+/// A JavaScript number value.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsNumber(raw::Local);
 
 impl JsNumber {
@@ -489,6 +757,59 @@ impl JsNumber {
 /// A JavaScript object.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsObject2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsObject2<'a> {
+    pub fn new<T: Scope<'a>>(_: &mut T) -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::object::new(&mut local);
+            JsObject2::from_raw(local)
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsObject2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsObject2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsObject2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_object(other.to_raw()) }
+    }
+}
+
+/// The trait of all object types.
+pub trait Object2<'a>: Value2<'a> {
+    // FIXME(commit): these methods:
+
+/*
+    fn get<'b, T: Scope<'b>, K: Key>(self, _: &mut T, key: K) -> VmResult<JsValue<'b>> {
+        build(|out| { unsafe { key.get(out, self.to_raw()) } })
+    }
+
+    fn get_own_property_names<'b, T: Scope<'b>>(self, _: &mut T) -> VmResult<JsArray2<'b>> {
+        build2(|out| { unsafe { neon_sys::object::get_own_property_names(out, self.to_raw()) } })
+    }
+
+    fn set<'b, K: Key, V: Value2<'b> + 'b>(self, key: K, val: V) -> VmResult<bool> {
+        let mut result = false;
+        if unsafe { key.set(&mut result, self.to_raw(), val.to_raw()) } {
+            Ok(result)
+        } else {
+            Err(Throw)
+        }
+    }
+*/
+}
+
+impl<'a> Object2<'a> for JsObject2<'a> { }
+
+/// A JavaScript object.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsObject(raw::Local);
 
 impl Value for JsObject { }
@@ -524,6 +845,8 @@ impl Key for u32 {
         neon_sys::object::set_index(out, obj, self, val)
     }
 }
+
+// FIXME(commit): impl<'a> Key for JsValue2 { ... } etc.
 
 impl<'a, K: Value> Key for Handle<'a, K> {
     unsafe fn get(self, out: &mut raw::Local, obj: raw::Local) -> bool {
@@ -599,6 +922,58 @@ impl JsObject {
 /// would return `true`.
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct JsArray2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsArray2<'a> {
+    pub fn new<T: Scope<'a>>(scope: &mut T, len: u32) -> Self {
+        unsafe {
+            let mut local: raw::Local = mem::zeroed();
+            neon_sys::array::new(&mut local, scope.isolate().to_raw(), len);
+            JsArray2::from_raw(local)
+        }
+    }
+
+    pub fn to_vec<'b, T: Scope<'b>>(self, scope: &mut T) -> VmResult<Vec<JsValue2<'b>>> {
+        let mut result = Vec::with_capacity(self.len() as usize);
+        let mut i = 0;
+        loop {
+            // Since getting a property can trigger arbitrary code,
+            // we have to re-check the length on every iteration.
+            if i >= self.len() {
+                return Ok(result);
+            }
+            // FIXME(commit): uncomment this when get() is implemented
+            // result.push(try!(self.get(scope, i)));
+            i += 1;
+        }
+    }
+
+    pub fn len(self) -> u32 {
+        unsafe {
+            neon_sys::array::len(self.to_raw())
+        }
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsArray2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsArray2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsArray2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_array(other.to_raw()) }
+    }
+}
+
+impl<'a> Object2<'a> for JsArray2<'a> { }
+
+
+/// A JavaScript array object, i.e. a value for which `Array.isArray`
+/// would return `true`.
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JsArray(raw::Local);
 
 impl JsArray {
@@ -658,6 +1033,38 @@ impl JsArray {
 }
 
 impl Object for JsArray { }
+
+/// A JavaScript function object.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JsFunction2<'a>(raw::Local, PhantomData<&'a ()>);
+
+impl<'a> JsFunction2<'a> {
+    pub fn new<'b, T: Scope<'b>, U: Value>(scope: &mut T, f: fn(Call) -> JsResult<U>) -> JsResult<JsFunction2<'b>> {
+        build2(|out| {
+            unsafe {
+                let isolate: *mut c_void = mem::transmute(scope.isolate().to_raw());
+                let (callback, kernel) = FunctionKernel(f).pair();
+                neon_sys::fun::new(out, isolate, callback, kernel)
+            }
+        })
+    }
+}
+
+unsafe impl<'a> Rooted<'a> for JsArray2<'a> {
+    fn to_raw(self) -> raw::Local { self.0 }
+
+    fn from_raw(h: raw::Local) -> Self { JsArray2(h, PhantomData) }
+}
+
+unsafe impl<'a> Value2<'a> for JsArray2<'a> {
+    fn is_typeof<'b, Other: Value2<'b> + 'b>(other: Other) -> bool {
+        unsafe { neon_sys::tag::is_array(other.to_raw()) }
+    }
+}
+
+impl<'a> Object2<'a> for JsArray2<'a> { }
+*/
 
 /// A JavaScript function object.
 #[repr(C)]
