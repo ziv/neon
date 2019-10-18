@@ -1,0 +1,49 @@
+name: CI
+on:
+  - push
+  - pull_request
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          #- ubuntu-18.04
+          - windows-2016
+          #- macOS-10.14
+        node:
+          #- 8
+          - 10
+          #- 12
+        rust:
+          #- stable
+          - beta
+          #- nightly
+    steps:
+      - uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions-rs/toolchain@v1
+        with:
+            default: true
+            toolchain: ${{ matrix.rust }}
+      - uses: actions/checkout@master
+      - name: Start Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          Xvfb :99 &
+          disown -ar
+          echo "::set-env name=DISPLAY:::99"
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Invoke-Expression (New-Object System.Net.WebClient).DownloadString('https://get.scoop.sh')
+          scoop install llvm --global
+          echo "::set-env name=LIBCLANG_PATH::C:\ProgramData\scoop\apps\llvm\current\bin"
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          command: test
+          args: --release
