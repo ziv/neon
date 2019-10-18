@@ -413,6 +413,7 @@ mod tests {
     // Only run the static tests in Beta. This will catch changes to error reporting
     // and any associated usability regressions before a new Rust version is shipped
     // but will have more stable results than Nightly.
+    #[cfg(not(windows))]
     #[rustversion::beta]
     #[test]
     fn static_test() { static_test_impl() }
